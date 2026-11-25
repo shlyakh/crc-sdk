@@ -1420,21 +1420,59 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 for part in station_parts:
                     station, year = part.station, part.year
                     assert station is not None and year is not None
-                    raw = (
-                        []
+                    raw: list[dict[str, object]] = []
+                    reason = (
+                        "No observation file exists"
                         if part.path is None
-                        else list(ghcnh_rows(part.path, station, year))
-                        if self.provider == "ghcnh"
-                        else list(isd_rows(part.path, station, year, superseded))
+                        else "The file contains no observations with source support"
                     )
+                    if part.path is not None:
+                        try:
+                            raw = (
+                                list(ghcnh_rows(part.path, station, year))
+                                if self.provider == "ghcnh"
+                                else list(
+                                    isd_rows(part.path, station, year, superseded)
+                                )
+                            )
+                        except ValueError as error:
+                            reason = f"The file holds an unusable report ({error})"
+                    raw_period = Period.window(year, year, calendar=Calendar.GREGORIAN)
+                    for row in raw:
+                        row["period_id"] = raw_period.id
+                    raw_spec = DataSpec(
+                        [raw_variable],
+                        series=[SeriesSpec(raw_variable, period=raw_period)],
+                    )
+                    raw_metadata = replace(
+                        actual,
+                        kind=EvidenceKind.OBSERVATIONS,
+                        spec=raw_spec,
+                        source=final.source,
+                        provenance=(),
+                        sampling=Sampling(
+                            calendar=Calendar.GREGORIAN,
+                            step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
+                        ),
+                        report=ExecutionReport(
+                            True,
+                            True,
+                            counts=ExecutionCounts(
+                                requested=len(raw),
+                                produced=len(raw),
+                                no_data=sum(row["value"] is None for row in raw),
+                            ),
+                            source_identities=final.report.source_identities,
+                        ),
+                    )
+                    try:
+                        evidence_table(raw, raw_metadata)
+                    except ValueError as error:
+                        raw = []
+                        reason = f"The file holds an unusable report ({error})"
                     if not raw:
                         incomplete += 1
                         unavailable += 1
-                        reason = (
-                            "No observation file exists"
-                            if part.path is None
-                            else "The file contains no observations with source support"
-                        )
                         diagnostic_records.append(
                             UnavailableStationYear(
                                 Stage.ACQUISITION
@@ -1466,40 +1504,11 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                             ),
                         )
                         continue
-                    raw_period = Period.window(year, year, calendar=Calendar.GREGORIAN)
-                    for row in raw:
-                        row["period_id"] = raw_period.id
-                    raw_spec = DataSpec(
-                        [raw_variable],
-                        series=[SeriesSpec(raw_variable, period=raw_period)],
-                    )
-                    raw_metadata = replace(
-                        actual,
-                        kind=EvidenceKind.OBSERVATIONS,
-                        spec=raw_spec,
-                        source=final.source,
-                        provenance=(),
-                        sampling=Sampling(
-                            calendar=Calendar.GREGORIAN,
-                            step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
-                        ),
-                        report=ExecutionReport(
-                            True,
-                            True,
-                            counts=ExecutionCounts(
-                                requested=len(raw),
-                                produced=len(raw),
-                                no_data=sum(row["value"] is None for row in raw),
-                            ),
-                            source_identities=final.report.source_identities,
-                        ),
-                    )
                     reduction = (
                         AnnualMaximum(coverage=self.coverage)
                         if self.indicator == _ANNUAL_MAXIMUM
                         else AnnualMinimum(coverage=self.coverage)
                     )
-                    evidence_table(raw, raw_metadata)
                     daily_table, daily_metadata = complete_daily_extrema(
                         raw,
                         raw_metadata,

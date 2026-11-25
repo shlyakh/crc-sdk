@@ -29,6 +29,7 @@ from crc_sdk import (
     ReadResult,
     ReleaseReference,
     Samples,
+    Stage,
     UnavailableStationYear,
     ValidationError,
     Variable,
@@ -582,6 +583,63 @@ def test_hourly_station_resources_are_attributed_to_ncei(
         "NOAA National Centers for Environmental Information; "
         "original source records retained."
     }
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ({"STATION": "TEST0000009"}, "unrequested station"),
+        ({}, "duplicate evidence record"),
+    ],
+)
+def test_unusable_ghcnh_station_year_is_a_diagnostic_beside_other_stations(
+    transport: NativeTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: dict[str, str],
+    message: str,
+) -> None:
+    def download(uri: str, path: Path) -> int:
+        if uri.endswith("ghcnh-station-list.csv"):
+            path.write_bytes(
+                b"GHCN_ID,NAME,LATITUDE,LONGITUDE,ELEVATION\n"
+                b"TEST0000001,Test,43.7,-79.4,100\n"
+                b"TEST0000002,Other,43.7,-79.4,100\n"
+            )
+            return 200
+        if uri.endswith("GHCNh_TEST0000002_2020.parquet"):
+            report = {
+                "STATION": "TEST0000002",
+                "DATE": "2020-01-01T00:00:00",
+                "LATITUDE": 43.7,
+                "LONGITUDE": -79.4,
+                "temperature": 10.0,
+                "temperature_Quality_Code": "1",
+                "temperature_Source_Code": "220",
+            }
+            pq.write_table(
+                pa.Table.from_pylist([report, {**report, **fault}]),
+                path,
+            )
+            return 200
+        return transport(uri, path)
+
+    monkeypatch.setattr(_source_io, "_download", download)
+    result = (
+        GHCNh(indicator=GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE)
+        .select(stations=["TEST0000001", "TEST0000002"], time=_year())
+        .read()
+    )
+    assert result.table["station_id"].to_pylist() == ["TEST0000001"]
+    counts = result.report.counts
+    assert counts.requested == counts.incomplete_years == 2
+    assert counts.produced == 1
+    unusable = [
+        d for d in result.report.diagnostics if isinstance(d, UnavailableStationYear)
+    ]
+    assert len(unusable) == 1
+    assert unusable[0].station_id == "TEST0000002" and unusable[0].year == 2020
+    assert unusable[0].stage is Stage.DECODING
+    assert message in unusable[0].message
 
 
 def test_native_404_is_cached_absence_with_station_year_diagnostic(

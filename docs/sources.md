@@ -269,7 +269,9 @@ A station ID identifies the station; support IDs identify immutable observation
 locations. A station move does not rewrite the geometry of earlier reports.
 Unavailable station-years appear as `UnavailableStationYear` diagnostics with
 the station ID, year, and required coverage fraction. The report counts them as
-requested and incomplete years. Source rows with known support carry their
+requested and incomplete years. In the named annual recipes, a station-year file
+holding a report that cannot be decoded is reported the same way, and the other
+selected stations are still returned. Source rows with known support carry their
 actual coverage and any failure directly.
 Snapshot checks use the absence status of a missing station resource. A new
 HTTP request identifier leaves a missing year pinned to the same absence.
